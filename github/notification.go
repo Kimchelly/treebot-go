@@ -14,13 +14,20 @@ type NotificationType string
 
 const NotificationTypePullRequest NotificationType = "PullRequest"
 
+// Reasons why a notification was sent.
+const (
+	ReasonReviewRequested = "review_requested"
+	ReasonAuthor          = "author"
+)
+
 type NotificationOptions struct {
-	IncludeRead bool
-	Before      time.Time
-	After       time.Time
-	Titles      []string
-	Types       []NotificationType
-	Users       []NotificationFromUserOptions
+	IncludeRead    bool
+	Before         time.Time
+	After          time.Time
+	IncludeTitles  []string
+	IncludeReasons []string
+	IncludeTypes   []NotificationType
+	IncludeUsers   []NotificationFromUserOptions
 }
 
 type UserType string
@@ -37,11 +44,12 @@ type NotificationFromUserOptions struct {
 
 func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions) ([]github.Notification, error) {
 	var titleMatcher titleFilters
-	for _, expr := range opts.Titles {
+	for _, expr := range opts.IncludeTitles {
 		titleMatcher.matches = append(titleMatcher.matches, regexp.MustCompile(expr))
 	}
-	typeMatcher := typeFilters{types: opts.Types}
-	userMatcher := notificationsFromUserFilter{users: opts.Users}
+	reasonMatcher := reasonFilters{reasons: opts.IncludeReasons}
+	typeMatcher := typeFilters{types: opts.IncludeTypes}
+	userMatcher := notificationsFromUserFilter{users: opts.IncludeUsers}
 
 	notifications, resp, err := c.Activity.ListNotifications(ctx, &github.NotificationListOptions{
 		All:    opts.IncludeRead,
@@ -58,9 +66,13 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 	var filtered []github.Notification
 
 	for _, n := range notifications {
-		pp.Println("checking notification", n.ID, n.Subject, n.Reason)
+		// pp.Println("checking notification", n.ID, n.Subject, n.Reason)
 
 		if !titleMatcher.shouldAdd(n) {
+			continue
+		}
+
+		if !reasonMatcher.shouldAdd(n) {
 			continue
 		}
 
@@ -102,6 +114,29 @@ func (f *titleFilters) shouldAdd(n *github.Notification) bool {
 
 	for _, expr := range f.matches {
 		if !expr.MatchString(*n.Subject.Title) {
+			continue
+		}
+		return true
+	}
+
+	return false
+}
+
+type reasonFilters struct {
+	reasons []string
+}
+
+func (f *reasonFilters) shouldAdd(n *github.Notification) bool {
+	if len(f.reasons) == 0 {
+		return true
+	}
+
+	if n.Reason == nil {
+		return false
+	}
+
+	for _, r := range f.reasons {
+		if r != *n.Reason {
 			continue
 		}
 		return true
@@ -153,7 +188,7 @@ func (f *notificationsFromUserFilter) shouldAdd(ctx context.Context, c *Client, 
 		}
 		pr, err := c.GetPRFromNotification(ctx, *n)
 		if err != nil {
-			return false, errors.Wrap(err, "getting PR from notification")
+			return false, errors.Wrap(err, "getting PR metadata from notification")
 		}
 
 		if pr.User == nil {
@@ -161,7 +196,6 @@ func (f *notificationsFromUserFilter) shouldAdd(ctx context.Context, c *Client, 
 		}
 
 		for _, u := range f.users {
-			pp.Println("checking PR:", pr)
 			if u.Name != "" {
 				if pr.User.Login == nil || u.Name != *pr.User.Login {
 					continue

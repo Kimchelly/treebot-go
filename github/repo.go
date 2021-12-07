@@ -17,7 +17,7 @@ type CommitStatusOptions struct {
 func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github.Notification) ([]github.RepoStatus, error) {
 	pr, err := c.GetPRFromNotification(ctx, n)
 	if err != nil {
-		return nil, errors.Wrap(err, "getting PR from notification")
+		return nil, errors.Wrap(err, "getting PR metadata from notification")
 	}
 
 	if pr.StatusesURL == nil {

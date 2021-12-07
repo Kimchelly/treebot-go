@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/google/go-github/v40/github"
 	"github.com/pkg/errors"
@@ -29,4 +31,32 @@ func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notificatio
 	}
 
 	return &pr, nil
+}
+
+func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notification) error {
+	pr, err := c.GetPRFromNotification(ctx, n)
+	if err != nil {
+		return errors.Wrap(err, "getting PR metadata from notification")
+	}
+
+	if n.Repository == nil || n.Repository.Owner == nil || n.Repository.Owner.Name == nil || n.Repository.Name == nil {
+		return errors.New("missing required repository information")
+	}
+
+	owner := *n.Repository.Owner.Name
+	repo := *n.Repository.Name
+	prNum := *pr.Number
+
+	res, resp, err := c.PullRequests.UpdateBranch(ctx, owner, repo, prNum, nil)
+	if err != nil {
+		return errors.Wrap(err, "updating branch")
+	}
+
+	if err := github.CheckResponse(resp.Response); err != nil {
+		return errors.Wrap(err, "GitHub response")
+	}
+
+	fmt.Fprintf(os.Stdout, "%s (%s)\n", *res.Message, *res.URL)
+
+	return nil
 }
