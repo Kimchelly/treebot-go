@@ -34,10 +34,7 @@ func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github
 	if err != nil {
 		return nil, errors.Wrap(err, "requesting repository status information")
 	}
-
-	if err := github.CheckResponse(resp.Response); err != nil {
-		return nil, errors.Wrap(err, "GitHub response")
-	}
+	defer resp.Body.Close()
 
 	return statuses, nil
 }

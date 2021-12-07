@@ -6,11 +6,31 @@ import (
 	"os"
 	"time"
 
+	"github.com/kimchelly/treebot-go/log"
+
 	"github.com/k0kubun/pp/v3"
 	"github.com/kimchelly/treebot-go/github"
+	"github.com/kimchelly/treebot-go/operations"
+	"github.com/urfave/cli/v2"
 )
 
 func main() {
+	app := cli.NewApp()
+	app.Name = "treebot"
+	app.Usage = "integration between Dependabot and Evergreen"
+	app.Commands = []*cli.Command{
+		operations.Authorize(),
+		operations.AutoAuthorize(),
+	}
+	defer log.Logger.Sync()
+	app.EnableBashCompletion = true
+	if err := app.Run(os.Args); err != nil {
+		log.Logger.Error(err)
+		os.Exit(1)
+	}
+}
+
+func doMainDependabotAuthorize() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -32,6 +52,7 @@ func main() {
 	}
 
 	for _, n := range notifications {
+		pp.Println("found notification:", n.Subject)
 		statuses, err := c.GetCommitStatusesFromNotification(ctx, n)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", err)

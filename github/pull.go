@@ -2,20 +2,16 @@ package github
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"os"
+
+	"github.com/kimchelly/treebot-go/log"
 
 	"github.com/google/go-github/v40/github"
 	"github.com/pkg/errors"
 )
 
 func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notification) (*github.PullRequest, error) {
-	if n.Subject == nil || n.Subject.URL == nil {
-		return nil, errors.New("missing required subject URL")
-	}
-
-	req, err := c.NewRequest(http.MethodGet, *n.Subject.URL, nil)
+	req, err := c.NewRequest(http.MethodGet, n.Subject.GetURL(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "creating request")
 	}
@@ -39,24 +35,22 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 		return errors.Wrap(err, "getting PR metadata from notification")
 	}
 
-	if n.Repository == nil || n.Repository.Owner == nil || n.Repository.Owner.Name == nil || n.Repository.Name == nil {
-		return errors.New("missing required repository information")
-	}
-
-	owner := *n.Repository.Owner.Name
-	repo := *n.Repository.Name
-	prNum := *pr.Number
+	owner := n.Repository.Owner.GetLogin()
+	repo := n.Repository.GetName()
+	prNum := pr.GetNumber()
 
 	res, resp, err := c.PullRequests.UpdateBranch(ctx, owner, repo, prNum, nil)
-	if err != nil {
+	// GitHub returns 202 Accepted to indicate a background job will handle the
+	// branch update, which manifests as an error even though the request was
+	// successfully submitted.
+	if err != nil && (resp == nil || github.CheckResponse(resp.Response) != nil) {
 		return errors.Wrap(err, "updating branch")
 	}
 
-	if err := github.CheckResponse(resp.Response); err != nil {
-		return errors.Wrap(err, "GitHub response")
-	}
-
-	fmt.Fprintf(os.Stdout, "%s (%s)\n", *res.Message, *res.URL)
+	log.Logger.Debug("updated branch successfully",
+		"message", res.GetMessage(),
+		"url", res.GetURL(),
+	)
 
 	return nil
 }
