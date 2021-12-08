@@ -72,7 +72,12 @@ func autoAuthorizeFromNotifications(c *cli.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ghc := github.NewClient(ctx, os.Getenv("GITHUB_OAUTH_TOKEN"))
+	token := os.Getenv("GITHUB_OAUTH_TOKEN")
+	if token == "" {
+		return errors.New("GITHUB_OAUTH_TOKEN environment variable is required")
+	}
+
+	ghc := github.NewClient(ctx, token)
 
 	notifications, err := ghc.GetNotifications(ctx, github.NotificationOptions{
 		After:          time.Now().Add(-c.Duration(pastFlag)),
