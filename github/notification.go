@@ -2,11 +2,13 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
 	"github.com/google/go-github/v40/github"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 type NotificationType string
@@ -60,23 +62,29 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 	}
 	defer resp.Body.Close()
 
+	zap.S().Debugf("found %d notifications matching notification filters", len(notifications))
+
 	var filtered []github.Notification
 
 	for _, n := range notifications {
 		if !titleMatcher.shouldAdd(n) {
+			zap.S().Debugf("%s: skipping notification due to unmatched notification title", GetLogFormat(*n))
 			continue
 		}
 
 		if !reasonMatcher.shouldAdd(n) {
+			zap.S().Debugf("%s: skipping notification due to unmatched notification reason", GetLogFormat(*n))
 			continue
 		}
 
 		if !typeMatcher.shouldAdd(n) {
+			zap.S().Debugf("%s: skipping notification due to unmatched notification type", GetLogFormat(*n))
 			continue
 		}
 
 		match, err := userMatcher.shouldAdd(ctx, c, n)
 		if err != nil {
+			zap.S().Debugf("%s: skipping notification due to unmatched user", GetLogFormat(*n))
 			return nil, errors.Wrap(err, "checking user matches")
 		}
 		if !match {
@@ -184,4 +192,8 @@ func (f *notificationsFromUserFilter) shouldAdd(ctx context.Context, c *Client, 
 	default:
 		return false, nil
 	}
+}
+
+func GetLogFormat(n github.Notification) string {
+	return fmt.Sprintf("\"%s (%s)\"", n.Subject.GetTitle(), n.Repository.GetFullName())
 }

@@ -4,10 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kimchelly/treebot-go/log"
-
 	"github.com/google/go-github/v40/github"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notification) (*github.PullRequest, error) {
@@ -47,7 +46,7 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 		return errors.Wrap(err, "updating branch")
 	}
 
-	log.Logger.Debug("updated branch successfully",
+	zap.S().Debug("updated branch successfully",
 		"message", res.GetMessage(),
 		"url", res.GetURL(),
 	)

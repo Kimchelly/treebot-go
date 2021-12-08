@@ -5,7 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/kimchelly/treebot-go/log"
+	"github.com/robfig/cron"
+	"go.uber.org/zap"
 
 	githubapi "github.com/google/go-github/v40/github"
 	"github.com/kimchelly/treebot-go/github"
@@ -13,40 +14,88 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+const (
+	pastFlag          = "past"
+	cronExprFlag      = "cron-expr"
+	includeReadFlag   = "include-read"
+	includeTitlesFlag = "include-titles"
+)
+
 func AutoAuthorize() *cli.Command {
 	return &cli.Command{
 		Name:  "auto-authorize",
 		Usage: "auto-authorize Dependabot PRs",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  includeReadFlag,
+				Usage: "include already-read notifications in Dependabot authorization checks",
+			},
+			&cli.StringSliceFlag{
+				Name:  includeTitlesFlag,
+				Usage: "include notifications matching the given title pattern(s)",
+			},
+			&cli.DurationFlag{
+				Name:  pastFlag,
+				Usage: "how long to search backwards in time for notifications",
+				Value: -24 * time.Hour,
+			},
+			&cli.StringFlag{
+				Name:  cronExprFlag,
+				Usage: "cron expression for when to run the cron job (docs: https://pkg.go.dev/github.com/robfig/cron@v1.2.0#hdr-CRON_Expression_Format)",
+			},
+		},
 		Action: func(c *cli.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			defer zap.S().Sync()
+			cronExpr := c.String(cronExprFlag)
+			if cronExpr == "" {
+				return autoAuthorizeFromNotifications(c)
+			}
 
-			ghc := github.NewClient(ctx, os.Getenv("GITHUB_OAUTH_TOKEN"))
-
-			notifications, err := ghc.GetNotifications(ctx, github.NotificationOptions{
-				// kim: TODO: make configurable
-				After:          time.Now().Add(-14 * 24 * time.Hour),
-				IncludeRead:    true,
-				IncludeTitles:  []string{"^CHORE:"},
-				IncludeReasons: []string{github.ReasonReviewRequested},
-				IncludeTypes:   []github.NotificationType{github.NotificationTypePullRequest},
-				IncludeUsers: []github.NotificationFromUserOptions{
-					{Name: "dependabot[bot]", Type: github.UserTypeBot},
-				},
+			schedule := cron.New()
+			schedule.AddFunc(cronExpr, func() {
+				autoAuthorizeFromNotifications(c)
 			})
-			if err != nil {
-				return errors.Wrap(err, "getting Dependabot notifications")
-			}
 
-			for _, n := range notifications {
-				if err := checkAndAuthorizeDependabotPRPatch(ctx, ghc, n); err != nil {
-					return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
-				}
-			}
+			schedule.Start()
 
-			return nil
+			// The infinite loop just keeps the program alive to run the cron
+			// job.
+			for {
+				time.Sleep(time.Hour)
+			}
 		},
 	}
+}
+
+func autoAuthorizeFromNotifications(c *cli.Context) error {
+	zap.S().Info("checking for Dependabot PRs to auto-authorize")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ghc := github.NewClient(ctx, os.Getenv("GITHUB_OAUTH_TOKEN"))
+
+	notifications, err := ghc.GetNotifications(ctx, github.NotificationOptions{
+		After:          time.Now().Add(-c.Duration(pastFlag)),
+		IncludeRead:    c.Bool(includeReadFlag),
+		IncludeTitles:  c.StringSlice(includeTitlesFlag),
+		IncludeReasons: []string{github.ReasonReviewRequested},
+		IncludeTypes:   []github.NotificationType{github.NotificationTypePullRequest},
+		IncludeUsers: []github.NotificationFromUserOptions{
+			{Name: "dependabot[bot]", Type: github.UserTypeBot},
+		},
+	})
+	if err != nil {
+		return errors.Wrap(err, "getting Dependabot notifications")
+	}
+
+	for _, n := range notifications {
+		zap.S().Debugf("%s: considering whether Dependabot needs to be authorized for this notification", github.GetLogFormat(n))
+		if err := checkAndAuthorizeDependabotPRPatch(ctx, ghc, n); err != nil {
+			return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
+		}
+	}
+
+	return nil
 }
 
 func checkAndAuthorizeDependabotPRPatch(ctx context.Context, ghc *github.Client, n githubapi.Notification) error {
@@ -60,37 +109,32 @@ func checkAndAuthorizeDependabotPRPatch(ctx context.Context, ghc *github.Client,
 	// Dependabot-authored commit.
 
 	if len(statuses) != 1 {
-		log.Logger.Debugf("skipping notification '%s' because it has multiple statuses", n.Subject.GetTitle())
+		zap.S().Debugf("%s: skipping notification because it has multiple statuses available", github.GetLogFormat(n))
 		return nil
 	}
 
 	status := statuses[0]
-	if status.State == nil || status.Description == nil {
-		log.Logger.Debugf("skipping notification '%s' because of status", n.Subject.GetTitle())
+	if status.GetState() != "failure" {
+		zap.S().Debugf("%s: skipping notification because of non-failure status", github.GetLogFormat(n))
 		return nil
 	}
-
-	if *status.State != "failure" {
-		log.Logger.Debugf("skipping notification '%s' because of non-failure status", n.Subject.GetTitle())
-		return nil
-	}
-	if *status.Description != "patch must be manually authorized" {
-		log.Logger.Debugf("skipping notification '%s' because of non-authorize message", n.Subject.GetTitle())
+	if status.GetDescription() != "patch must be manually authorized" {
+		zap.S().Debugf("%s: skipping notification because it contains a status message other than the manual patch authorization message", github.GetLogFormat(n))
 		return nil
 	}
 
 	pr, err := ghc.GetPRFromNotification(ctx, n)
 	if err != nil {
-		log.Logger.Debugf("cannot get PR from notification '%s'", n.Subject.GetTitle())
+		zap.S().Debugf("cannot get PR from notification '%s'", n.Subject.GetTitle())
 		return errors.Wrap(err, "getting PR from notification")
 	}
 
 	if numCommits := pr.GetCommits(); numCommits != 1 {
-		log.Logger.Debugf("PR from notification '%s' has %d commits, but auto-authorization requires that there should only be 1 Dependabot commit", n.Subject.GetTitle(), numCommits)
+		zap.S().Debugf("PR from notification '%s' has %d commits, but auto-authorization requires that there should only be 1 Dependabot commit", n.Subject.GetTitle(), numCommits)
 		return nil
 	}
 
-	log.Logger.Infow("updating PR",
+	zap.S().Infow("updating Dependabot PR",
 		"title", pr.GetTitle(),
 		"url", pr.GetURL(),
 	)
