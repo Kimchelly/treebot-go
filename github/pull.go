@@ -9,6 +9,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	PRStateOpen   = "open"
+	PRStateClosed = "closed"
+)
+
 func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notification) (*github.PullRequest, error) {
 	req, err := c.NewRequest(http.MethodGet, n.Subject.GetURL(), nil)
 	if err != nil {

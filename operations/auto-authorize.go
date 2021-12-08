@@ -125,12 +125,16 @@ func checkAndAuthorizeDependabotPRPatch(ctx context.Context, ghc *github.Client,
 
 	pr, err := ghc.GetPRFromNotification(ctx, n)
 	if err != nil {
-		zap.S().Debugf("cannot get PR from notification '%s'", n.Subject.GetTitle())
 		return errors.Wrap(err, "getting PR from notification")
 	}
 
+	if state := pr.GetState(); state != github.PRStateOpen {
+		zap.S().Debugf("%s: skipping because PR state is '%s'", github.GetLogFormat(n), state)
+		return nil
+	}
+
 	if numCommits := pr.GetCommits(); numCommits != 1 {
-		zap.S().Debugf("PR from notification '%s' has %d commits, but auto-authorization requires that there should only be 1 Dependabot commit", n.Subject.GetTitle(), numCommits)
+		zap.S().Debugf("%s: skipping PR which has %d commits - auto-authorization requires that there should be exactly 1 Dependabot commit", github.GetLogFormat(n), numCommits)
 		return nil
 	}
 

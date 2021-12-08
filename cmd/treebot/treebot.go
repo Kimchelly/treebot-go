@@ -21,7 +21,6 @@ func main() {
 	app.Name = "treebot"
 	app.Usage = "integration between Dependabot and Evergreen"
 	app.Commands = []*cli.Command{
-		operations.Authorize(),
 		operations.AutoAuthorize(),
 	}
 	app.Flags = []cli.Flag{
