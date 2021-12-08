@@ -47,7 +47,7 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 	// GitHub returns 202 Accepted to indicate a background job will handle the
 	// branch update, which manifests as an error even though the request was
 	// successfully submitted.
-	if err != nil && (resp == nil || github.CheckResponse(resp.Response) != nil) {
+	if err != nil && (resp == nil || !errors.Is(github.CheckResponse(resp.Response), &github.AcceptedError{})) {
 		return errors.Wrap(err, "updating branch")
 	}
 
