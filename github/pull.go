@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/google/go-github/v40/github"
@@ -51,9 +52,38 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 		return errors.Wrap(err, "updating branch")
 	}
 
-	zap.S().Debugw("updated branch successfully",
+	zap.S().Debugw("updated PR successfully",
 		"message", res.GetMessage(),
 		"url", res.GetURL(),
+	)
+
+	return nil
+}
+
+func (c *Client) MergePRFromNotification(ctx context.Context, n github.Notification) error {
+	pr, err := c.GetPRFromNotification(ctx, n)
+	if err != nil {
+		return errors.Wrap(err, "getting PR metadata from notification")
+	}
+
+	owner := n.Repository.Owner.GetLogin()
+	repo := n.Repository.GetName()
+	prNum := pr.GetNumber()
+	commitMsg := fmt.Sprintf("%s (#%d)", pr.GetTitle(), prNum)
+	opts := github.PullRequestOptions{
+		MergeMethod: "squash",
+	}
+
+	res, _, err := c.PullRequests.Merge(ctx, owner, repo, prNum, commitMsg, &opts)
+	if err != nil {
+		return errors.Wrap(err, "merging PR")
+	}
+	if !res.GetMerged() {
+		return errors.New("PR was not merged")
+	}
+
+	zap.S().Debugw("merged PR successfully",
+		"message", res.GetMessage(),
 	)
 
 	return nil

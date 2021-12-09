@@ -8,6 +8,13 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	CommitStatusPending = "pending"
+	CommitStatusError   = "error"
+	CommitStatusSuccess = "success"
+	CommitStatusFailure = "failure"
+)
+
 type CommitStatusOptions struct {
 	Owner string
 	Repo  string

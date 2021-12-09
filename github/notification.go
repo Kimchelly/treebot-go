@@ -17,8 +17,17 @@ const NotificationTypePullRequest NotificationType = "PullRequest"
 
 // Reasons why a notification was sent.
 const (
-	ReasonReviewRequested = "review_requested"
+	ReasonAssign          = "assign"
 	ReasonAuthor          = "author"
+	ReasonCIActivity      = "ci_activity"
+	ReasonComment         = "comment"
+	ReasonInvitation      = "invitation"
+	ReasonManual          = "manual"
+	ReasonMention         = "mention"
+	ReasonSecurityAlert   = "security_alert"
+	ReasonReviewRequested = "review_requested"
+	ReasonStateChange     = "state_change"
+	ReasonTeamMention     = "team_mention"
 )
 
 type NotificationOptions struct {

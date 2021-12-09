@@ -1,11 +1,13 @@
 package operations
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/robfig/cron"
 	"go.uber.org/zap"
 
 	githubapi "github.com/google/go-github/v40/github"
@@ -16,9 +18,9 @@ import (
 
 const (
 	pastFlag          = "past"
-	cronExprFlag      = "cron-expr"
 	includeReadFlag   = "include-read"
 	includeTitlesFlag = "include-titles"
+	interactiveFlag   = "interactive"
 )
 
 func AutoAuthorize() *cli.Command {
@@ -39,41 +41,25 @@ func AutoAuthorize() *cli.Command {
 				Usage: "how long to search backwards in time for notifications",
 				Value: -24 * time.Hour,
 			},
-			&cli.StringFlag{
-				Name:  cronExprFlag,
-				Usage: "cron expression for when to run the cron job (docs: https://pkg.go.dev/github.com/robfig/cron@v1.2.0#hdr-CRON_Expression_Format)",
+			&cli.BoolFlag{
+				Name:  interactiveFlag,
+				Usage: "authorize PRs in interactive session",
 			},
 		},
 		Action: func(c *cli.Context) error {
 			defer zap.S().Sync()
-			cronExpr := c.String(cronExprFlag)
-			if cronExpr == "" {
-				return autoAuthorizeDependabotPRsFromNotifications(c)
-			}
-
-			schedule := cron.New()
-			schedule.AddFunc(cronExpr, func() {
-				autoAuthorizeDependabotPRsFromNotifications(c)
-			})
-
-			schedule.Start()
-
-			// The infinite loop just keeps the program alive to run the cron
-			// job.
-			for {
-				time.Sleep(time.Hour)
-			}
+			return autoAuthorizeDependabotPRsFromNotifications(c)
 		},
 	}
 }
 
 func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
-	zap.S().Info("checking for Dependabot PRs to auto-authorize")
-
 	token := os.Getenv("GITHUB_OAUTH_TOKEN")
 	if token == "" {
 		return errors.New("GITHUB_OAUTH_TOKEN environment variable is required")
 	}
+
+	zap.S().Info("checking for Dependabot PRs to auto-authorize")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -87,7 +73,7 @@ func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
 
 	for _, n := range notifications {
 		zap.S().Debugf("%s: considering whether Dependabot needs to be authorized for this notification", github.GetLogFormat(n))
-		if err := checkAndAuthorizeDependabotPR(ctx, ghc, n); err != nil {
+		if err := checkAndAuthorizeDependabotPR(ctx, ghc, c, n); err != nil {
 			return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
 		}
 	}
@@ -111,11 +97,11 @@ func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cl
 	})
 }
 
-func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, n githubapi.Notification) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) error {
+	getCommitStatusCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
-	statuses, err := ghc.GetCommitStatusesFromNotification(ctx, n)
+	statuses, err := ghc.GetCommitStatusesFromNotification(getCommitStatusCtx, n)
 	if err != nil {
 		return errors.Wrap(err, "getting Dependabot PR status")
 	}
@@ -125,21 +111,23 @@ func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, n gi
 	// Dependabot-authored commit.
 
 	if len(statuses) != 1 {
-		zap.S().Debugf("%s: skipping notification because it has multiple statuses available", github.GetLogFormat(n))
+		zap.S().Debugf("%s: skipping notification because it has multiple commit statuses available, but there should be exactly 1 failed commit status for a Dependabot PR in need of manual authorization", github.GetLogFormat(n))
+		return nil
+	}
+	latest := statuses[0]
+	if state := latest.GetState(); state != github.CommitStatusFailure {
+		zap.S().Debugf("%s: skipping notification because latest commit status should be a failure for a Dependabot PR in need of manual authorization, but the actual commit status is '%s'", github.GetLogFormat(n), state)
+		return nil
+	}
+	if latest.GetDescription() != "patch must be manually authorized" {
+		zap.S().Debugf("%s: skipping notification because it contains a commit status message other than the manual patch authorization message", github.GetLogFormat(n))
 		return nil
 	}
 
-	status := statuses[0]
-	if status.GetState() != "failure" {
-		zap.S().Debugf("%s: skipping notification because of non-failure status", github.GetLogFormat(n))
-		return nil
-	}
-	if status.GetDescription() != "patch must be manually authorized" {
-		zap.S().Debugf("%s: skipping notification because it contains a status message other than the manual patch authorization message", github.GetLogFormat(n))
-		return nil
-	}
+	getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 
-	pr, err := ghc.GetPRFromNotification(ctx, n)
+	pr, err := ghc.GetPRFromNotification(getPRCtx, n)
 	if err != nil {
 		return errors.Wrap(err, "getting PR from notification")
 	}
@@ -148,20 +136,52 @@ func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, n gi
 		zap.S().Debugf("%s: skipping because PR state is '%s'", github.GetLogFormat(n), state)
 		return nil
 	}
-
 	if numCommits := pr.GetCommits(); numCommits != 1 {
 		zap.S().Debugf("%s: skipping PR which has %d commits - auto-authorization requires that there should be exactly 1 Dependabot commit", github.GetLogFormat(n), numCommits)
 		return nil
 	}
 
-	zap.S().Infow("updating Dependabot PR",
+	if c.Bool(interactiveFlag) {
+		yes, err := yesOrNo(fmt.Sprintf("%s\nAuthorize PR?", github.GetLogFormat(n)))
+		if err != nil {
+			return errors.Wrap(err, "asking user to authorize Dependabot PR")
+		}
+		if !yes {
+			return nil
+		}
+	}
+
+	zap.S().Infow("authorizing Dependabot PR",
 		"title", pr.GetTitle(),
 		"url", pr.GetURL(),
 	)
 
-	if err := ghc.UpdatePRFromNotification(ctx, n); err != nil {
+	updatePRCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	if err := ghc.UpdatePRFromNotification(updatePRCtx, n); err != nil {
 		return errors.Wrap(err, "updating Dependabot PR")
 	}
 
 	return nil
+}
+
+func yesOrNo(message string) (bool, error) {
+	for {
+		fmt.Printf("%s [y/n] ", message)
+		r := bufio.NewReader(os.Stdin)
+
+		input, err := r.ReadString('\n')
+		if err != nil {
+			return false, errors.Wrap(err, "reading user input")
+		}
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "y":
+			return true, nil
+		case "n":
+			return false, nil
+		}
+	}
 }

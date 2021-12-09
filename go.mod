@@ -6,7 +6,6 @@ require (
 	github.com/google/go-github/v40 v40.0.0
 	github.com/k0kubun/pp/v3 v3.0.7
 	github.com/pkg/errors v0.9.1
-	github.com/robfig/cron v1.2.0
 	github.com/urfave/cli/v2 v2.3.0
 	go.uber.org/zap v1.19.1
 	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8
