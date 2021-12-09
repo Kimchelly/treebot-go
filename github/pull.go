@@ -51,7 +51,7 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 		return errors.Wrap(err, "updating branch")
 	}
 
-	zap.S().Debug("updated branch successfully",
+	zap.S().Debugw("updated branch successfully",
 		"message", res.GetMessage(),
 		"url", res.GetURL(),
 	)
