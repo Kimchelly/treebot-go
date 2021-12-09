@@ -62,7 +62,9 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 	}
 	defer resp.Body.Close()
 
-	zap.S().Debugf("found %d notifications matching notification filters", len(notifications))
+	zap.S().Debugw("found notifications matching notification filters",
+		"count", len(notifications),
+	)
 
 	var filtered []github.Notification
 
@@ -92,6 +94,12 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 		}
 
 		filtered = append(filtered, *n)
+	}
+
+	if len(filtered) != len(notifications) {
+		zap.S().Debugw("filtered notifications to smaller candidate set",
+			"count", len(notifications),
+		)
 	}
 
 	return filtered, nil

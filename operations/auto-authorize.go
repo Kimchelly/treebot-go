@@ -48,12 +48,12 @@ func AutoAuthorize() *cli.Command {
 			defer zap.S().Sync()
 			cronExpr := c.String(cronExprFlag)
 			if cronExpr == "" {
-				return autoAuthorizeFromNotifications(c)
+				return autoAuthorizeDependabotPRsFromNotifications(c)
 			}
 
 			schedule := cron.New()
 			schedule.AddFunc(cronExpr, func() {
-				autoAuthorizeFromNotifications(c)
+				autoAuthorizeDependabotPRsFromNotifications(c)
 			})
 
 			schedule.Start()
@@ -67,19 +67,39 @@ func AutoAuthorize() *cli.Command {
 	}
 }
 
-func autoAuthorizeFromNotifications(c *cli.Context) error {
+func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
 	zap.S().Info("checking for Dependabot PRs to auto-authorize")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	token := os.Getenv("GITHUB_OAUTH_TOKEN")
 	if token == "" {
 		return errors.New("GITHUB_OAUTH_TOKEN environment variable is required")
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	ghc := github.NewClient(ctx, token)
 
-	notifications, err := ghc.GetNotifications(ctx, github.NotificationOptions{
+	notifications, err := getDependabotPRNotifications(ctx, ghc, c)
+	if err != nil {
+		return errors.Wrap(err, "getting Dependabot PR notifications")
+	}
+
+	for _, n := range notifications {
+		zap.S().Debugf("%s: considering whether Dependabot needs to be authorized for this notification", github.GetLogFormat(n))
+		if err := checkAndAuthorizeDependabotPR(ctx, ghc, n); err != nil {
+			return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
+		}
+	}
+
+	return nil
+}
+
+func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cli.Context) ([]githubapi.Notification, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	return ghc.GetNotifications(ctx, github.NotificationOptions{
 		After:          time.Now().Add(-c.Duration(pastFlag)),
 		IncludeRead:    c.Bool(includeReadFlag),
 		IncludeTitles:  c.StringSlice(includeTitlesFlag),
@@ -89,21 +109,12 @@ func autoAuthorizeFromNotifications(c *cli.Context) error {
 			{Name: "dependabot[bot]", Type: github.UserTypeBot},
 		},
 	})
-	if err != nil {
-		return errors.Wrap(err, "getting Dependabot notifications")
-	}
-
-	for _, n := range notifications {
-		zap.S().Debugf("%s: considering whether Dependabot needs to be authorized for this notification", github.GetLogFormat(n))
-		if err := checkAndAuthorizeDependabotPRPatch(ctx, ghc, n); err != nil {
-			return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
-		}
-	}
-
-	return nil
 }
 
-func checkAndAuthorizeDependabotPRPatch(ctx context.Context, ghc *github.Client, n githubapi.Notification) error {
+func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, n githubapi.Notification) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
 	statuses, err := ghc.GetCommitStatusesFromNotification(ctx, n)
 	if err != nil {
 		return errors.Wrap(err, "getting Dependabot PR status")
