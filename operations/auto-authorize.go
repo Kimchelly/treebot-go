@@ -17,37 +17,46 @@ import (
 )
 
 const (
-	pastFlag          = "past"
-	includeReadFlag   = "include-read"
-	includeTitlesFlag = "include-titles"
-	interactiveFlag   = "interactive"
+	pastFlag                = "past"
+	includeReadFlag         = "include-read"
+	includeTitlesFlag       = "include-titles"
+	interactiveFlag         = "interactive"
+	checkDependabotUserFlag = "check-dependabot-user"
 )
+
+func autoGitHubFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  includeReadFlag,
+			Usage: "include already-read notifications in Dependabot authorization checks",
+		},
+		&cli.StringSliceFlag{
+			Name:  includeTitlesFlag,
+			Usage: "include notifications matching the given title pattern(s)",
+		},
+		&cli.DurationFlag{
+			Name:  pastFlag,
+			Usage: "how long to search backwards in time for notifications",
+			Value: -24 * time.Hour,
+		},
+		&cli.BoolFlag{
+			Name:  interactiveFlag,
+			Usage: "authorize PRs in interactive session",
+		},
+		&cli.BoolFlag{
+			Name:  checkDependabotUserFlag,
+			Usage: "do an extra check to ensure that the notification is from Dependabot",
+		},
+	}
+}
 
 func AutoAuthorize() *cli.Command {
 	return &cli.Command{
-		Name:  "auto-authorize",
-		Usage: "auto-authorize Dependabot PRs",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  includeReadFlag,
-				Usage: "include already-read notifications in Dependabot authorization checks",
-			},
-			&cli.StringSliceFlag{
-				Name:  includeTitlesFlag,
-				Usage: "include notifications matching the given title pattern(s)",
-			},
-			&cli.DurationFlag{
-				Name:  pastFlag,
-				Usage: "how long to search backwards in time for notifications",
-				Value: -24 * time.Hour,
-			},
-			&cli.BoolFlag{
-				Name:  interactiveFlag,
-				Usage: "authorize PRs in interactive session",
-			},
-		},
+		Name:    "auto-authorize",
+		Aliases: []string{"aa"},
+		Usage:   "auto-authorize Dependabot PRs",
+		Flags:   autoGitHubFlags(),
 		Action: func(c *cli.Context) error {
-			defer zap.S().Sync()
 			return autoAuthorizeDependabotPRsFromNotifications(c)
 		},
 	}
@@ -71,11 +80,25 @@ func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
 		return errors.Wrap(err, "getting Dependabot PR notifications")
 	}
 
-	for _, n := range notifications {
-		zap.S().Debugf("%s: considering whether Dependabot needs to be authorized for this notification", github.GetLogFormat(n))
-		if err := checkAndAuthorizeDependabotPR(ctx, ghc, c, n); err != nil {
-			return errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification")
+	var unresolved []githubapi.Notification
+	for i, n := range notifications {
+		zap.S().Debugf("Notification #%d: %s", i+1, github.GetLogFormat(n))
+
+		res, err := checkAndAuthorizeDependabotPR(ctx, ghc, c, n)
+		fmt.Println()
+		if err != nil {
+			zap.S().Error(errors.Wrapf(err, "checking and authorizing Dependabot PR patch from notification"))
+			continue
 		}
+
+		if res == skipped {
+			unresolved = append(unresolved, notifications[i])
+		}
+	}
+
+	zap.S().Info("Unresolved notifications:")
+	for _, n := range unresolved {
+		zap.S().Info(github.GetLogFormat(n))
 	}
 
 	return nil
@@ -85,25 +108,60 @@ func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cl
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	return ghc.GetNotifications(ctx, github.NotificationOptions{
+	opts := github.NotificationOptions{
 		After:          time.Now().Add(-c.Duration(pastFlag)),
 		IncludeRead:    c.Bool(includeReadFlag),
 		IncludeTitles:  c.StringSlice(includeTitlesFlag),
 		IncludeReasons: []string{github.ReasonReviewRequested},
 		IncludeTypes:   []github.NotificationType{github.NotificationTypePullRequest},
-		IncludeUsers: []github.NotificationFromUserOptions{
-			{Name: "dependabot[bot]", Type: github.UserTypeBot},
-		},
-	})
+	}
+	if c.Bool(checkDependabotUserFlag) {
+		// This check is quite expensive, so put it behind a flag.
+		opts.IncludeUsers = []github.NotificationFromUserOptions{
+			{Name: github.DependabotUsername, Type: github.UserTypeBot},
+		}
+	}
+	return ghc.GetNotifications(ctx, opts)
 }
 
-func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) error {
+type operationResult string
+
+const (
+	done        operationResult = "done"
+	alreadyDone operationResult = "already-done"
+	skipped     operationResult = "skipped"
+	errored     operationResult = "errored"
+)
+
+func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) (operationResult, error) {
+	getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	pr, err := ghc.GetPRFromNotification(getPRCtx, n)
+	if err != nil {
+		return errored, errors.Wrap(err, "getting PR from notification")
+	}
+
+	zap.S().Info("URL: ", github.GetHumanReadableURLForPR(n, *pr))
+
+	if state := pr.GetState(); state != github.PRStateOpen {
+		zap.S().Debugf("skipping because PR state is '%s'", state)
+		if state == github.PRStateClosed {
+			return alreadyDone, nil
+		}
+		return skipped, nil
+	}
+	if numCommits := pr.GetCommits(); numCommits != 1 {
+		zap.S().Debugf("skipping PR which has %d commits - auto-authorization requires that there should be exactly 1 Dependabot commit", numCommits)
+		return skipped, nil
+	}
+
 	getCommitStatusCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	statuses, err := ghc.GetCommitStatusesFromNotification(getCommitStatusCtx, n)
 	if err != nil {
-		return errors.Wrap(err, "getting Dependabot PR status")
+		return errored, errors.Wrap(err, "getting Dependabot PR status")
 	}
 
 	// Only consider PRs for which there's only 1 status ("failure",
@@ -111,44 +169,29 @@ func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *c
 	// Dependabot-authored commit.
 
 	if len(statuses) != 1 {
-		zap.S().Debugf("%s: skipping notification because it has multiple commit statuses available, but there should be exactly 1 failed commit status for a Dependabot PR in need of manual authorization", github.GetLogFormat(n))
-		return nil
+		zap.S().Debugf("skipping notification because it has multiple commit statuses available, but there should be exactly 1 failed commit status for a Dependabot PR in need of manual authorization")
+		return skipped, nil
 	}
 	latest := statuses[0]
 	if state := latest.GetState(); state != github.CommitStatusFailure {
-		zap.S().Debugf("%s: skipping notification because latest commit status should be a failure for a Dependabot PR in need of manual authorization, but the actual commit status is '%s'", github.GetLogFormat(n), state)
-		return nil
+		zap.S().Debugf("skipping notification because latest commit status should be a failure for a Dependabot PR in need of manual authorization, but the actual commit status is '%s'", state)
+		return skipped, nil
 	}
 	if latest.GetDescription() != "patch must be manually authorized" {
-		zap.S().Debugf("%s: skipping notification because it contains a commit status message other than the manual patch authorization message", github.GetLogFormat(n))
-		return nil
-	}
-
-	getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-
-	pr, err := ghc.GetPRFromNotification(getPRCtx, n)
-	if err != nil {
-		return errors.Wrap(err, "getting PR from notification")
-	}
-
-	if state := pr.GetState(); state != github.PRStateOpen {
-		zap.S().Debugf("%s: skipping because PR state is '%s'", github.GetLogFormat(n), state)
-		return nil
-	}
-	if numCommits := pr.GetCommits(); numCommits != 1 {
-		zap.S().Debugf("%s: skipping PR which has %d commits - auto-authorization requires that there should be exactly 1 Dependabot commit", github.GetLogFormat(n), numCommits)
-		return nil
+		zap.S().Debugf("skipping notification because it contains a commit status message other than the manual patch authorization message")
+		return skipped, nil
 	}
 
 	if c.Bool(interactiveFlag) {
-		yes, err := yesOrNo(fmt.Sprintf("%s\nAuthorize PR?", github.GetLogFormat(n)))
+		fmt.Println()
+		yes, err := yesOrNo("Authorize this PR?")
 		if err != nil {
-			return errors.Wrap(err, "asking user to authorize Dependabot PR")
+			return errored, errors.Wrap(err, "asking user to authorize Dependabot PR")
 		}
 		if !yes {
-			return nil
+			return skipped, nil
 		}
+		fmt.Println()
 	}
 
 	zap.S().Infow("authorizing Dependabot PR",
@@ -160,10 +203,10 @@ func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *c
 	defer cancel()
 
 	if err := ghc.UpdatePRFromNotification(updatePRCtx, n); err != nil {
-		return errors.Wrap(err, "updating Dependabot PR")
+		return errored, errors.Wrap(err, "updating Dependabot PR")
 	}
 
-	return nil
+	return done, nil
 }
 
 func yesOrNo(message string) (bool, error) {
@@ -183,5 +226,6 @@ func yesOrNo(message string) (bool, error) {
 		case "n":
 			return false, nil
 		}
+		fmt.Println("Invalid input, please try again.")
 	}
 }

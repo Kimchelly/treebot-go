@@ -15,23 +15,13 @@ const (
 	CommitStatusFailure = "failure"
 )
 
-type CommitStatusOptions struct {
-	Owner string
-	Repo  string
-	Ref   string
-}
-
 func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github.Notification) ([]github.RepoStatus, error) {
 	pr, err := c.GetPRFromNotification(ctx, n)
 	if err != nil {
 		return nil, errors.Wrap(err, "getting PR metadata from notification")
 	}
 
-	if pr.StatusesURL == nil {
-		return nil, errors.Wrap(err, "missing URL to get PR statuses")
-	}
-
-	req, err := c.NewRequest(http.MethodGet, *pr.StatusesURL, nil)
+	req, err := c.NewRequest(http.MethodGet, pr.GetStatusesURL(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "creating request")
 	}
@@ -42,6 +32,44 @@ func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github
 		return nil, errors.Wrap(err, "requesting repository status information")
 	}
 	defer resp.Body.Close()
+
+	return statuses, nil
+}
+
+func (c *Client) GetCommitsFromNotification(ctx context.Context, n github.Notification) ([]github.Commit, error) {
+	pr, err := c.GetPRFromNotification(ctx, n)
+	if err != nil {
+		return nil, errors.Wrap(err, "getting PR metadata from notification")
+	}
+
+	req, err := c.NewRequest(http.MethodGet, pr.GetCommitsURL(), nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "creating request")
+	}
+
+	commits := []github.Commit{}
+	resp, err := c.Do(ctx, req, &commits)
+	if err != nil {
+		return nil, errors.Wrap(err, "requesting commit information")
+	}
+	defer resp.Body.Close()
+
+	return commits, nil
+}
+
+func (c *Client) GetStatusesFromNotificationAndCommit(ctx context.Context, n github.Notification, commit github.Commit) ([]github.RepoStatus, error) {
+	owner := n.Repository.Owner.GetLogin()
+	repo := n.Repository.GetName()
+
+	res, resp, err := c.Repositories.ListStatuses(ctx, owner, repo, commit.GetSHA(), nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "requesting commit status information")
+	}
+	defer resp.Body.Close()
+	var statuses []github.RepoStatus
+	for _, s := range res {
+		statuses = append(statuses, *s)
+	}
 
 	return statuses, nil
 }

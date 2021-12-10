@@ -13,6 +13,11 @@ import (
 const (
 	PRStateOpen   = "open"
 	PRStateClosed = "closed"
+
+	MergeableStateUnknown  = "unknown"
+	MergeableStateClean    = "clean"
+	MergeableStateUnstable = "unstable"
+	MergeableStateDirty    = "dirty"
 )
 
 func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notification) (*github.PullRequest, error) {
@@ -48,7 +53,13 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 	// GitHub returns 202 Accepted to indicate a background job will handle the
 	// branch update, which manifests as an error even though the request was
 	// successfully submitted.
-	if err != nil && (resp == nil || !errors.Is(github.CheckResponse(resp.Response), &github.AcceptedError{})) {
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		return nil
+	}
+	if err != nil {
 		return errors.Wrap(err, "updating branch")
 	}
 
@@ -69,22 +80,28 @@ func (c *Client) MergePRFromNotification(ctx context.Context, n github.Notificat
 	owner := n.Repository.Owner.GetLogin()
 	repo := n.Repository.GetName()
 	prNum := pr.GetNumber()
-	commitMsg := fmt.Sprintf("%s (#%d)", pr.GetTitle(), prNum)
 	opts := github.PullRequestOptions{
-		MergeMethod: "squash",
+		MergeMethod:        "squash",
+		DontDefaultIfBlank: true,
 	}
 
-	res, _, err := c.PullRequests.Merge(ctx, owner, repo, prNum, commitMsg, &opts)
+	res, resp, err := c.PullRequests.Merge(ctx, owner, repo, prNum, "", &opts)
 	if err != nil {
 		return errors.Wrap(err, "merging PR")
 	}
+	defer resp.Body.Close()
 	if !res.GetMerged() {
 		return errors.New("PR was not merged")
 	}
 
 	zap.S().Debugw("merged PR successfully",
 		"message", res.GetMessage(),
+		"sha", res.GetSHA(),
 	)
 
 	return nil
+}
+
+func GetHumanReadableURLForPR(n github.Notification, pr github.PullRequest) string {
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", n.Repository.Owner.GetLogin(), n.Repository.GetName(), pr.GetNumber())
 }

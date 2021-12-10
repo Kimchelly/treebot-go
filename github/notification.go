@@ -47,6 +47,8 @@ const (
 	UserTypeUser UserType = "User"
 )
 
+const DependabotUsername = "dependabot[bot]"
+
 type NotificationFromUserOptions struct {
 	Name string
 	Type UserType
@@ -107,7 +109,7 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 
 	if len(filtered) != len(notifications) {
 		zap.S().Debugw("filtered notifications to smaller candidate set",
-			"count", len(notifications),
+			"count", len(filtered),
 		)
 	}
 

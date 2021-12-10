@@ -16,10 +16,12 @@ import (
 
 func AutoMerge() *cli.Command {
 	return &cli.Command{
-		Name:  "auto-merge",
-		Usage: "automatically merge Dependabot PRs that pass all CI tests",
+		Name:    "auto-merge",
+		Aliases: []string{"am"},
+		Usage:   "automatically merge Dependabot PRs that pass all CI tests",
+		Flags:   autoGitHubFlags(),
 		Action: func(c *cli.Context) error {
-			return nil
+			return autoMergeDependabotPRsFromNotifications(c)
 		},
 	}
 }
@@ -42,62 +44,138 @@ func autoMergeDependabotPRsFromNotifications(c *cli.Context) error {
 		return errors.Wrap(err, "getting Dependabot PR notifications")
 	}
 
+	var unresolved []githubapi.Notification
+	for i, n := range notifications {
+		zap.S().Infof("Notification #%d: %s", i+1, github.GetLogFormat(n))
+
+		res, err := checkAndMergeDependabotPR(ctx, ghc, c, n)
+		fmt.Println()
+		if err != nil {
+			zap.S().Error(errors.Wrapf(err, "checking and merging Dependabot PR from notification"))
+			continue
+		}
+
+		if res == skipped {
+			unresolved = append(unresolved, notifications[i])
+		}
+	}
+
+	zap.S().Info("Unresolved notifications:")
 	for _, n := range notifications {
-		zap.S().Debugf("%s: considering whether Dependabot PR needs to be merged for this notification", github.GetLogFormat(n))
+		zap.S().Info(github.GetLogFormat(n))
 	}
 
 	return nil
 }
 
-func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) error {
-	getCommitStatusCtx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
+func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) (operationResult, error) {
+	var mergeable bool
+	var pr *githubapi.PullRequest
+	var err error
+	var loggedURLForPR bool
+	// A PR might not be immediately mergeable if a previous PR was just merged
+	// for this repo. This retry loop just polls hoping that it'll be mergeable
+	// soon.
+	for i := 0; !mergeable && i < 10; i++ {
+		getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
 
-	statuses, err := ghc.GetCommitStatusesFromNotification(getCommitStatusCtx, n)
-	if err != nil {
-		return errors.Wrap(err, "getting Dependabot PR status")
+		pr, err = ghc.GetPRFromNotification(getPRCtx, n)
+		if err != nil {
+			return errored, errors.Wrap(err, "getting PR from notification")
+		}
+		if !loggedURLForPR {
+			zap.S().Info("URL: ", github.GetHumanReadableURLForPR(n, *pr))
+			loggedURLForPR = true
+		}
+
+		if state := pr.GetState(); state != github.PRStateOpen {
+			zap.S().Debugf("skipping because PR state is '%s'", state)
+			if state == github.PRStateClosed {
+				return alreadyDone, nil
+			}
+			return skipped, nil
+		}
+
+		switch pr.GetMergeableState() {
+		case github.MergeableStateClean:
+		case github.MergeableStateUnstable:
+		case github.MergeableStateUnknown:
+			zap.S().Debugf("PR check attempt #%d: uncertain if PR is mergeable", i+1)
+			time.Sleep(time.Second)
+			continue
+		default:
+			zap.S().Debugf("skipping PR because it is not cleanly mergeable - mergeable status is '%s'", pr.GetMergeableState())
+			return skipped, nil
+		}
+
+		if !pr.GetMergeable() {
+			zap.S().Debugf("PR check attempt #%d: PR is not mergeable", i+1)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		mergeable = true
+	}
+	if !mergeable {
+		zap.S().Debugf("skipping because PR is not mergeable")
+		return skipped, nil
 	}
 
+	commits, err := ghc.GetCommitsFromNotification(ctx, n)
+	if err != nil {
+		return errored, errors.Wrap(err, "getting commits from notification")
+	}
+	if len(commits) == 0 {
+		zap.S().Debugf("skipping because PR has no commits")
+		return skipped, nil
+	}
+
+	latest := commits[len(commits)-1]
+	statuses, err := ghc.GetStatusesFromNotificationAndCommit(ctx, n, latest)
+	if err != nil {
+		return errored, errors.Wrap(err, "getting statuses from latest commit")
+	}
 	if len(statuses) == 0 {
-		zap.S().Debugf("%s: skipping notification because it has no commit statuses")
-		return nil
+		zap.S().Debugf("skipping notification because the latest commit has no statuses available")
+		return skipped, nil
 	}
 
-	latest := statuses[0]
-	if state := latest.GetState(); state != github.CommitStatusSuccess {
-		zap.S().Debugf("%s: skipping notification because its latest commit status should be success for a Dependabot PR, but the actual commit status is '%s'", github.GetLogFormat(n), state)
-		return nil
+	var patchFinished bool
+	for _, s := range statuses {
+		if state := s.GetState(); state == github.CommitStatusFailure {
+			zap.S().Debugf("skipping notification because its latest commit cannot have a failure for a Dependabot PR, but the actual commit status is '%s'", state)
+			return skipped, nil
+		}
+		if strings.Contains(s.GetDescription(), "patch finished") {
+			patchFinished = true
+		}
 	}
-	if !strings.Contains(latest.GetDescription(), "patch finished") {
-		zap.S().Debugf("%s: skipping notification because it contains a commit status message other than the patch finished message", github.GetLogFormat(n))
+	if !patchFinished {
+		zap.S().Debugf("skipping notification because the commit status messages indicate that the patch has not finished")
+		return skipped, nil
 	}
 
-	getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-
-	pr, err := ghc.GetPRFromNotification(getPRCtx, n)
-	if err != nil {
-		return errors.Wrap(err, "getting PR from notification")
-	}
-	if !pr.GetMergeable() {
-		return errors.Errorf("%s: cannot determine if PR is mergeable", github.GetLogFormat(n))
-	}
-	if pr.GetMergeableState() != "clean" {
-		return errors.Errorf("%s: PR is not cleanly mergeable", github.GetLogFormat(n))
-	}
-	if state := pr.GetState(); state != github.PRStateOpen {
-		zap.S().Debugf("%s: skipping because PR state is '%s'", github.GetLogFormat(n), state)
-		return nil
+	zap.S().Info("Statuses for latest commit in PR:")
+	for _, s := range statuses {
+		zap.S().Infow("",
+			"context", s.GetContext(),
+			"state", s.GetState(),
+			"description", s.GetDescription(),
+			"target_url", s.GetTargetURL(),
+		)
 	}
 
 	if c.Bool(interactiveFlag) {
-		yes, err := yesOrNo(fmt.Sprintf("%s\nMerge PR?", github.GetLogFormat(n)))
+		fmt.Println()
+		yes, err := yesOrNo("Merge this PR?")
 		if err != nil {
-			return errors.Wrap(err, "asking user to authorize Dependabot PR")
+			return errored, errors.Wrap(err, "asking user to merge Dependabot PR")
 		}
 		if !yes {
-			return nil
+			return skipped, nil
 		}
+		fmt.Println()
 	}
 
 	zap.S().Infow("merging Dependabot PR",
@@ -109,8 +187,8 @@ func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.C
 	defer cancel()
 
 	if err := ghc.MergePRFromNotification(mergePRCtx, n); err != nil {
-		return errors.Wrap(err, "merging Dependabot PR")
+		return errored, errors.Wrap(err, "merging Dependabot PR")
 	}
 
-	return nil
+	return done, nil
 }

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/k0kubun/pp/v3"
+	"github.com/k0kubun/pp"
 	"github.com/kimchelly/treebot-go/github"
 	"github.com/kimchelly/treebot-go/operations"
 	"github.com/pkg/errors"
@@ -22,6 +22,7 @@ func main() {
 	app.Usage = "integration between Dependabot and Evergreen"
 	app.Commands = []*cli.Command{
 		operations.AutoAuthorize(),
+		operations.AutoMerge(),
 	}
 	app.Flags = []cli.Flag{
 		&cli.StringSliceFlag{
