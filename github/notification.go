@@ -116,6 +116,36 @@ func (c *Client) GetNotifications(ctx context.Context, opts NotificationOptions)
 	return filtered, nil
 }
 
+type PullRequestNotification struct {
+	Notification github.Notification
+	PullRequest  github.PullRequest
+}
+
+func (c *Client) GetPRNotifications(ctx context.Context, opts NotificationOptions) ([]PullRequestNotification, error) {
+	notifications, err := c.GetNotifications(ctx, opts)
+	if err != nil {
+		return nil, errors.Wrap(err, "getting notifications")
+	}
+
+	if len(notifications) > 0 {
+		zap.S().Debug("fetching pull request information for candidate notifications")
+	}
+
+	var prNotifications []PullRequestNotification
+	for _, n := range notifications {
+		pr, err := c.GetPRFromNotification(ctx, n)
+		if err != nil {
+			return nil, errors.Wrapf(err, "getting PR for notification '%s'", GetLogFormat(n))
+		}
+		prNotifications = append(prNotifications, PullRequestNotification{
+			Notification: n,
+			PullRequest:  *pr,
+		})
+	}
+
+	return prNotifications, nil
+}
+
 type titleFilters struct {
 	matches []*regexp.Regexp
 }

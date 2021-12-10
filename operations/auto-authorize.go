@@ -10,7 +10,6 @@ import (
 
 	"go.uber.org/zap"
 
-	githubapi "github.com/google/go-github/v40/github"
 	"github.com/kimchelly/treebot-go/github"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
@@ -80,9 +79,10 @@ func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
 		return errors.Wrap(err, "getting Dependabot PR notifications")
 	}
 
-	var unresolved []githubapi.Notification
+	var unresolved []github.PullRequestNotification
 	for i, n := range notifications {
-		zap.S().Debugf("Notification #%d: %s", i+1, github.GetLogFormat(n))
+		zap.S().Infof("Notification #%d: %s", i+1, github.GetLogFormat(n.Notification))
+		zap.S().Infof("URL: %s", github.GetHumanReadableURL(n))
 
 		res, err := checkAndAuthorizeDependabotPR(ctx, ghc, c, n)
 		fmt.Println()
@@ -96,15 +96,12 @@ func autoAuthorizeDependabotPRsFromNotifications(c *cli.Context) error {
 		}
 	}
 
-	zap.S().Info("Unresolved notifications:")
-	for _, n := range unresolved {
-		zap.S().Info(github.GetLogFormat(n))
-	}
+	logUnresolvedNotifications(unresolved)
 
 	return nil
 }
 
-func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cli.Context) ([]githubapi.Notification, error) {
+func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cli.Context) ([]github.PullRequestNotification, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -121,7 +118,7 @@ func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cl
 			{Name: github.DependabotUsername, Type: github.UserTypeBot},
 		}
 	}
-	return ghc.GetNotifications(ctx, opts)
+	return ghc.GetPRNotifications(ctx, opts)
 }
 
 type operationResult string
@@ -133,16 +130,8 @@ const (
 	errored     operationResult = "errored"
 )
 
-func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) (operationResult, error) {
-	getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-
-	pr, err := ghc.GetPRFromNotification(getPRCtx, n)
-	if err != nil {
-		return errored, errors.Wrap(err, "getting PR from notification")
-	}
-
-	zap.S().Info("URL: ", github.GetHumanReadableURLForPR(n, *pr))
+func checkAndAuthorizeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n github.PullRequestNotification) (operationResult, error) {
+	pr := n.PullRequest
 
 	if state := pr.GetState(); state != github.PRStateOpen {
 		zap.S().Debugf("skipping because PR state is '%s'", state)
@@ -227,5 +216,18 @@ func yesOrNo(message string) (bool, error) {
 			return false, nil
 		}
 		fmt.Println("Invalid input, please try again.")
+	}
+}
+
+func logUnresolvedNotifications(notifications []github.PullRequestNotification) {
+	if len(notifications) == 0 {
+		return
+	}
+
+	zap.S().Info("Unresolved notifications:")
+	for _, n := range notifications {
+		zap.S().Infof("Notification: %s", github.GetLogFormat(n.Notification))
+		zap.S().Infof("URL: %s", github.GetHumanReadableURL(n))
+		zap.S().Info()
 	}
 }

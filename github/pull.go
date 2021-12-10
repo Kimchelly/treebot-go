@@ -39,15 +39,10 @@ func (c *Client) GetPRFromNotification(ctx context.Context, n github.Notificatio
 	return &pr, nil
 }
 
-func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notification) error {
-	pr, err := c.GetPRFromNotification(ctx, n)
-	if err != nil {
-		return errors.Wrap(err, "getting PR metadata from notification")
-	}
-
-	owner := n.Repository.Owner.GetLogin()
-	repo := n.Repository.GetName()
-	prNum := pr.GetNumber()
+func (c *Client) UpdatePRFromNotification(ctx context.Context, n PullRequestNotification) error {
+	owner := n.Notification.Repository.Owner.GetLogin()
+	repo := n.Notification.Repository.GetName()
+	prNum := n.PullRequest.GetNumber()
 
 	res, resp, err := c.PullRequests.UpdateBranch(ctx, owner, repo, prNum, nil)
 	// GitHub returns 202 Accepted to indicate a background job will handle the
@@ -71,15 +66,10 @@ func (c *Client) UpdatePRFromNotification(ctx context.Context, n github.Notifica
 	return nil
 }
 
-func (c *Client) MergePRFromNotification(ctx context.Context, n github.Notification) error {
-	pr, err := c.GetPRFromNotification(ctx, n)
-	if err != nil {
-		return errors.Wrap(err, "getting PR metadata from notification")
-	}
-
-	owner := n.Repository.Owner.GetLogin()
-	repo := n.Repository.GetName()
-	prNum := pr.GetNumber()
+func (c *Client) MergePRFromNotification(ctx context.Context, n PullRequestNotification) error {
+	owner := n.Notification.Repository.Owner.GetLogin()
+	repo := n.Notification.Repository.GetName()
+	prNum := n.PullRequest.GetNumber()
 	opts := github.PullRequestOptions{
 		MergeMethod:        "squash",
 		DontDefaultIfBlank: true,
@@ -102,6 +92,6 @@ func (c *Client) MergePRFromNotification(ctx context.Context, n github.Notificat
 	return nil
 }
 
-func GetHumanReadableURLForPR(n github.Notification, pr github.PullRequest) string {
-	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", n.Repository.Owner.GetLogin(), n.Repository.GetName(), pr.GetNumber())
+func GetHumanReadableURL(n PullRequestNotification) string {
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", n.Notification.Repository.Owner.GetLogin(), n.Notification.Repository.GetName(), n.PullRequest.GetNumber())
 }

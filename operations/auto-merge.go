@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	githubapi "github.com/google/go-github/v40/github"
 	"github.com/kimchelly/treebot-go/github"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
@@ -44,9 +43,10 @@ func autoMergeDependabotPRsFromNotifications(c *cli.Context) error {
 		return errors.Wrap(err, "getting Dependabot PR notifications")
 	}
 
-	var unresolved []githubapi.Notification
+	var unresolved []github.PullRequestNotification
 	for i, n := range notifications {
-		zap.S().Infof("Notification #%d: %s", i+1, github.GetLogFormat(n))
+		zap.S().Infof("Notification #%d: %s", i+1, github.GetLogFormat(n.Notification))
+		zap.S().Infof("URL: %s", github.GetHumanReadableURL(n))
 
 		res, err := checkAndMergeDependabotPR(ctx, ghc, c, n)
 		fmt.Println()
@@ -60,19 +60,14 @@ func autoMergeDependabotPRsFromNotifications(c *cli.Context) error {
 		}
 	}
 
-	zap.S().Info("Unresolved notifications:")
-	for _, n := range notifications {
-		zap.S().Info(github.GetLogFormat(n))
-	}
+	logUnresolvedNotifications(unresolved)
 
 	return nil
 }
 
-func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n githubapi.Notification) (operationResult, error) {
+func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.Context, n github.PullRequestNotification) (operationResult, error) {
 	var mergeable bool
-	var pr *githubapi.PullRequest
-	var err error
-	var loggedURLForPR bool
+	pr := n.PullRequest
 	// A PR might not be immediately mergeable if a previous PR was just merged
 	// for this repo. This retry loop just polls hoping that it'll be mergeable
 	// soon.
@@ -80,14 +75,11 @@ func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.C
 		getPRCtx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 
-		pr, err = ghc.GetPRFromNotification(getPRCtx, n)
+		latestPR, err := ghc.GetPRFromNotification(getPRCtx, n.Notification)
 		if err != nil {
 			return errored, errors.Wrap(err, "getting PR from notification")
 		}
-		if !loggedURLForPR {
-			zap.S().Info("URL: ", github.GetHumanReadableURLForPR(n, *pr))
-			loggedURLForPR = true
-		}
+		pr = *latestPR
 
 		if state := pr.GetState(); state != github.PRStateOpen {
 			zap.S().Debugf("skipping because PR state is '%s'", state)
@@ -132,7 +124,7 @@ func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.C
 	}
 
 	latest := commits[len(commits)-1]
-	statuses, err := ghc.GetStatusesFromNotificationAndCommit(ctx, n, latest)
+	statuses, err := ghc.GetStatusesFromNotificationAndCommit(ctx, n.Notification, latest)
 	if err != nil {
 		return errored, errors.Wrap(err, "getting statuses from latest commit")
 	}

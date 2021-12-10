@@ -15,13 +15,8 @@ const (
 	CommitStatusFailure = "failure"
 )
 
-func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github.Notification) ([]github.RepoStatus, error) {
-	pr, err := c.GetPRFromNotification(ctx, n)
-	if err != nil {
-		return nil, errors.Wrap(err, "getting PR metadata from notification")
-	}
-
-	req, err := c.NewRequest(http.MethodGet, pr.GetStatusesURL(), nil)
+func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n PullRequestNotification) ([]github.RepoStatus, error) {
+	req, err := c.NewRequest(http.MethodGet, n.PullRequest.GetStatusesURL(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "creating request")
 	}
@@ -36,13 +31,8 @@ func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n github
 	return statuses, nil
 }
 
-func (c *Client) GetCommitsFromNotification(ctx context.Context, n github.Notification) ([]github.Commit, error) {
-	pr, err := c.GetPRFromNotification(ctx, n)
-	if err != nil {
-		return nil, errors.Wrap(err, "getting PR metadata from notification")
-	}
-
-	req, err := c.NewRequest(http.MethodGet, pr.GetCommitsURL(), nil)
+func (c *Client) GetCommitsFromNotification(ctx context.Context, n PullRequestNotification) ([]github.Commit, error) {
+	req, err := c.NewRequest(http.MethodGet, n.PullRequest.GetCommitsURL(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "creating request")
 	}
