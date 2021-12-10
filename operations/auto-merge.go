@@ -124,17 +124,28 @@ func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.C
 	}
 
 	latest := commits[len(commits)-1]
-	statuses, err := ghc.GetStatusesFromNotificationAndCommit(ctx, n.Notification, latest)
+	status, err := ghc.GetCombinedStatusFromNotificationAndCommit(ctx, n.Notification, latest)
 	if err != nil {
 		return errored, errors.Wrap(err, "getting statuses from latest commit")
 	}
-	if len(statuses) == 0 {
+	if len(status.Statuses) == 0 {
 		zap.S().Debugf("skipping notification because the latest commit has no statuses available")
 		return skipped, nil
 	}
 
+	if state := status.GetState(); state != github.CombinedStatusSuccess {
+		zap.S().Debugf("skipping notification because the latest commit's status is '%s'", state)
+		return skipped, nil
+	}
+
 	var patchFinished bool
-	for _, s := range statuses {
+	for i, s := range status.Statuses {
+		zap.S().Infow(fmt.Sprintf("status #%d:", i+1),
+			"context", s.GetContext(),
+			"state", s.GetState(),
+			"description", s.GetDescription(),
+			"target_url", s.GetTargetURL(),
+		)
 		if state := s.GetState(); state == github.CommitStatusFailure {
 			zap.S().Debugf("skipping notification because its latest commit cannot have a failure for a Dependabot PR, but the actual commit status is '%s'", state)
 			return skipped, nil
@@ -146,16 +157,6 @@ func checkAndMergeDependabotPR(ctx context.Context, ghc *github.Client, c *cli.C
 	if !patchFinished {
 		zap.S().Debugf("skipping notification because the commit status messages indicate that the patch has not finished")
 		return skipped, nil
-	}
-
-	zap.S().Info("Statuses for latest commit in PR:")
-	for _, s := range statuses {
-		zap.S().Infow("",
-			"context", s.GetContext(),
-			"state", s.GetState(),
-			"description", s.GetDescription(),
-			"target_url", s.GetTargetURL(),
-		)
 	}
 
 	if c.Bool(interactiveFlag) {

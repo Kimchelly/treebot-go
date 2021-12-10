@@ -13,6 +13,10 @@ const (
 	CommitStatusError   = "error"
 	CommitStatusSuccess = "success"
 	CommitStatusFailure = "failure"
+
+	CombinedStatusPending = "pending"
+	CombinedStatusSuccess = "success"
+	CombinedStatusFailure = "failure"
 )
 
 func (c *Client) GetCommitStatusesFromNotification(ctx context.Context, n PullRequestNotification) ([]github.RepoStatus, error) {
@@ -47,19 +51,15 @@ func (c *Client) GetCommitsFromNotification(ctx context.Context, n PullRequestNo
 	return commits, nil
 }
 
-func (c *Client) GetStatusesFromNotificationAndCommit(ctx context.Context, n github.Notification, commit github.Commit) ([]github.RepoStatus, error) {
+func (c *Client) GetCombinedStatusFromNotificationAndCommit(ctx context.Context, n github.Notification, commit github.Commit) (*github.CombinedStatus, error) {
 	owner := n.Repository.Owner.GetLogin()
 	repo := n.Repository.GetName()
 
-	res, resp, err := c.Repositories.ListStatuses(ctx, owner, repo, commit.GetSHA(), nil)
+	res, resp, err := c.Repositories.GetCombinedStatus(ctx, owner, repo, commit.GetSHA(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "requesting commit status information")
 	}
 	defer resp.Body.Close()
-	var statuses []github.RepoStatus
-	for _, s := range res {
-		statuses = append(statuses, *s)
-	}
 
-	return statuses, nil
+	return res, nil
 }
