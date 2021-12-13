@@ -30,6 +30,22 @@ const (
 	ReasonTeamMention     = "team_mention"
 )
 
+func Reasons() []string {
+	return []string{
+		ReasonAssign,
+		ReasonAuthor,
+		ReasonCIActivity,
+		ReasonComment,
+		ReasonInvitation,
+		ReasonManual,
+		ReasonMention,
+		ReasonSecurityAlert,
+		ReasonReviewRequested,
+		ReasonStateChange,
+		ReasonTeamMention,
+	}
+}
+
 type NotificationOptions struct {
 	IncludeRead    bool
 	Before         time.Time

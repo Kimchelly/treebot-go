@@ -19,6 +19,7 @@ const (
 	pastFlag                = "past"
 	includeReadFlag         = "include-read"
 	includeTitlesFlag       = "include-titles"
+	includeReasonsFlag      = "include-reasons"
 	interactiveFlag         = "interactive"
 	checkDependabotUserFlag = "check-dependabot-user"
 )
@@ -32,6 +33,10 @@ func autoGitHubFlags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:  includeTitlesFlag,
 			Usage: "include notifications matching the given title pattern(s)",
+		},
+		&cli.StringSliceFlag{
+			Name:  includeReasonsFlag,
+			Usage: fmt.Sprintf("include notifications that match particular notification reason(s). Valid reasons: %s", strings.Join(github.Reasons(), ", ")),
 		},
 		&cli.DurationFlag{
 			Name:  pastFlag,
@@ -109,7 +114,7 @@ func getDependabotPRNotifications(ctx context.Context, ghc *github.Client, c *cl
 		After:          time.Now().Add(-c.Duration(pastFlag)),
 		IncludeRead:    c.Bool(includeReadFlag),
 		IncludeTitles:  c.StringSlice(includeTitlesFlag),
-		IncludeReasons: []string{github.ReasonReviewRequested},
+		IncludeReasons: c.StringSlice(includeReasonsFlag),
 		IncludeTypes:   []github.NotificationType{github.NotificationTypePullRequest},
 	}
 	if c.Bool(checkDependabotUserFlag) {
