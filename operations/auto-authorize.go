@@ -41,7 +41,7 @@ func autoGitHubFlags() []cli.Flag {
 		&cli.DurationFlag{
 			Name:  pastFlag,
 			Usage: "how long to search backwards in time for notifications",
-			Value: -24 * time.Hour,
+			Value: 24 * time.Hour,
 		},
 		&cli.BoolFlag{
 			Name:  interactiveFlag,
